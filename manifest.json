@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.borferkic.obs-status-guard",
+  "name": "OBS Status & Guard",
+  "version": "0.5.0",
+  "author": "borferkic",
+  "license": "MIT",
+  "description": "Shows an ON AIR pill with the stream time while OBS is live, warns on screen if OBS closes abruptly while streaming, and can reopen OBS and resume the stream.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OBS Status & Guard",
+    "description": "ON AIR indicator with stream time, and a warning if OBS closes while streaming",
+    "category": "System",
+    "aliases": [
+      "obs",
+      "onair",
+      "stream",
+      "twitch"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "autoRestart": false,
+      "soundAlert": true,
+      "alertScale": 300,
+      "monitor": "",
+      "soundFile": "",
+      "monitoring": true,
+      "obsMonitor": ""
+    },
+    "schema": [
+      {
+        "key": "monitoring",
+        "type": "boolean",
+        "label": "Monitor OBS (turn off to pause the status pill, alerts and auto-reopen)",
+        "defaultValue": true
+      },
+      {
+        "key": "autoRestart",
+        "type": "boolean",
+        "label": "Reopen OBS and resume streaming automatically after it closes abruptly",
+        "defaultValue": false
+      },
+      {
+        "key": "soundAlert",
+        "type": "boolean",
+        "label": "Play a sound when OBS closes abruptly",
+        "defaultValue": true
+      },
+      {
+        "key": "soundFile",
+        "type": "path",
+        "label": "Custom alert sound file (blank uses the built-in alarm)",
+        "defaultValue": ""
+      },
+      {
+        "key": "alertScale",
+        "type": "integer",
+        "label": "Size of the on-screen alert (%)",
+        "min": 100,
+        "max": 500,
+        "step": 50,
+        "defaultValue": 300
+      },
+      {
+        "key": "monitor",
+        "type": "string",
+        "label": "Monitor for the warning (e.g. DP-5; blank uses the largest monitor)",
+        "defaultValue": ""
+      },
+      {
+        "key": "obsMonitor",
+        "type": "string",
+        "label": "Monitor where OBS reopens (e.g. HDMI-A-1; blank leaves it wherever it opens)",
+        "defaultValue": ""
+      }
+    ]
+  }
+}

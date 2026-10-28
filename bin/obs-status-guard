@@ -1,0 +1,561 @@
+#!/usr/bin/env python3
+"""OBS Status & Guard daemon.
+
+Watches OBS through its built-in obs-websocket 5.x server (stdlib only: this
+machine ships no websocket library), keeps a state file for the bar widgets
+and streams the same state as JSON lines on stdout for the service.
+
+States: idle, live, crashed.
+  live     OBS reports an active stream.
+  crashed  the stream was live and OBS vanished without announcing a clean
+           exit (the ExitStarted event). Cleared when a stream is live again
+           or when the user dismisses it.
+
+Optionally relaunches OBS in normal mode and resumes streaming. The flag is
+`autoRestart` in this widget's entry of shell.json.
+
+Usage: obs-status-guard daemon | status | dismiss | preview
+"""
+import base64
+import fcntl
+import hashlib
+import json
+import os
+import re
+import select
+import shlex
+import shutil
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+PLUGIN_ID = "io.github.borferkic.obs-status-guard"
+HOME = os.path.expanduser("~")
+SHELL_JSON = os.path.join(HOME, ".config/omarchy/shell.json")
+OBS_WS_CONFIG = os.path.join(HOME, ".config/obs-studio/plugin_config/obs-websocket/config.json")
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp/obs-status-guard-%d" % os.getuid(), "obs-status-guard")
+STATE_FILE = os.path.join(RUNTIME, "state.json")
+DISMISS_FILE = os.path.join(RUNTIME, "dismiss")
+PREVIEW_FILE = os.path.join(RUNTIME, "preview")
+PREVIEW_SECONDS = 6
+
+MOVE_WINDOW = 90         # seconds to wait for OBS's window after a relaunch
+MAX_RESTARTS = 3          # relaunches allowed per window, so a crash loop can't keep going live
+RESTART_WINDOW = 600
+RESTART_DELAY = 5         # seconds to wait after OBS disappears before reopening it; any sooner it opens with an error
+MAX_MESSAGE = 1 << 20     # bound anything read from the socket
+
+
+# ---------------------------------------------------------------- settings
+
+def read_settings():
+    """This widget's inline entry from shell.json (any bar section)."""
+    try:
+        with open(SHELL_JSON) as f:
+            layout = json.load(f).get("bar", {}).get("layout", {})
+    except (OSError, ValueError):
+        return {}
+    for items in layout.values():
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict) and item.get("id") == PLUGIN_ID:
+                return item
+    return {}
+
+
+def custom_sound(setting):
+    """The chosen sound file, or "" for the built-in one. Always an absolute
+    path (so it can never be read as a player option) to a real, small file."""
+    if not isinstance(setting, str) or not setting.strip():
+        return ""
+    path = os.path.expanduser(setting.strip())
+    try:
+        if os.path.isabs(path) and os.path.isfile(path) and os.path.getsize(path) <= 20 << 20:
+            return path
+    except OSError:
+        pass
+    return ""
+
+
+def pick_monitor(preferred):
+    """Monitor for the warning: the configured one, else the largest."""
+    try:
+        out = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=3).stdout
+        mons = json.loads(out)
+    except Exception:
+        return preferred or ""
+    names = [m.get("name", "") for m in mons]
+    if preferred and preferred in names:
+        return preferred
+    # No setting: the main monitor is the one with the most pixels.
+    mons.sort(key=lambda m: -(m.get("width", 0) * m.get("height", 0)))
+    return mons[0].get("name", "") if mons else ""
+
+
+# ---------------------------------------------------------------- processes
+
+def obs_running():
+    me = os.getuid()
+    comm = os.environ.get("OBS_STATUS_GUARD_COMM", "obs")   # overridden only by the tests
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return False
+    for pid in entries:
+        if not pid.isdigit():
+            continue
+        try:
+            if os.stat("/proc/%s" % pid).st_uid != me:
+                continue
+            with open("/proc/%s/comm" % pid) as f:
+                if f.read().strip() != comm:
+                    continue
+            with open("/proc/%s/stat" % pid) as f:
+                if f.read().rsplit(")", 1)[1].split()[0] == "Z":
+                    continue
+            return True
+        except (OSError, IndexError):
+            continue
+    return False
+
+
+def obs_command():
+    """How the user's own launcher starts OBS: the Exec line of its desktop
+    entry, so environment tweaks such as LIBVA_DRIVER_NAME carry over. Without
+    them OBS can come up with encoders missing (QuickSync, VAAPI) and stop on a
+    "Missing Encoders" dialog. Falls back to a plain `obs`."""
+    data_home = os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local/share")
+    dirs = [data_home] + (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")
+    for d in dirs:
+        path = os.path.join(d, "applications", "com.obsproject.Studio.desktop")
+        try:
+            in_entry = False
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("["):
+                        in_entry = line == "[Desktop Entry]"
+                    elif in_entry and line.startswith("Exec="):
+                        argv = [a for a in shlex.split(line[5:]) if not a.startswith("%")]
+                        if argv:
+                            return argv
+        except (OSError, ValueError):
+            continue
+    return ["obs"]
+
+
+SENTINEL_DIR = os.path.join(HOME, ".config/obs-studio/.sentinel")
+
+
+def clear_stale_sentinels():
+    """OBS 33 leaves a run_* file in its sentinel folder for every instance and
+    deletes it on a clean exit. Files left by instances that crashed or were
+    killed make the next start ask "normal or safe mode?". Only call this while
+    no OBS is running: then every file there is stale."""
+    try:
+        names = os.listdir(SENTINEL_DIR)
+    except OSError:
+        return
+    for name in names:
+        if name.startswith("run_"):
+            try:
+                os.remove(os.path.join(SENTINEL_DIR, name))
+            except OSError:
+                pass
+
+
+def launch_obs():
+    # Normal mode, not safe mode: with the stale sentinels gone OBS has nothing
+    # to ask about. (OBS 33 has no --disable-shutdown-check any more.)
+    if not obs_running():
+        clear_stale_sentinels()
+    cmd = obs_command()
+    if "--startstreaming" not in cmd:
+        cmd.append("--startstreaming")
+    if shutil.which("uwsm-app"):
+        cmd = ["uwsm-app", "--"] + cmd
+    subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def hypr_json(*args):
+    try:
+        out = subprocess.run(["hyprctl", *args, "-j"], capture_output=True, text=True, timeout=3).stdout
+        return json.loads(out)
+    except Exception:
+        return None
+
+
+def move_obs_window(monitor_name):
+    """Send OBS's main window to `monitor_name` without taking focus.
+    True once it is there (or can never be moved); False to try again later,
+    e.g. while OBS is still starting and has no window yet."""
+    monitors = hypr_json("monitors")
+    clients = hypr_json("clients")
+    if not monitors or clients is None:
+        return False
+    target = next((m for m in monitors if m.get("name") == monitor_name), None)
+    if target is None:
+        return True                      # that monitor is not connected
+    # The main window is titled "OBS <version> - Profile: ... - Scenes: ...".
+    # Dialogs (the safe-mode question, "Missing Encoders") have other titles and
+    # stay where they are: they open before the main window even exists.
+    for c in clients:
+        title = str(c.get("title", ""))
+        if c.get("class") == "com.obsproject.Studio" and title.startswith("OBS ") and " - Profile: " in title:
+            if c.get("monitor") == target.get("id"):
+                return True
+            ws = (target.get("activeWorkspace") or {}).get("id")
+            address = str(c.get("address", ""))
+            # Hyprland reads dispatch arguments as Lua, so only a plain integer
+            # and a plain hex address may go into the expression.
+            if not isinstance(ws, int) or not re.fullmatch(r"0x[0-9a-fA-F]+", address):
+                return True
+            expr = 'hl.dsp.window.move({ workspace = "%d", follow = false, window = "address:%s" })' % (ws, address)
+            subprocess.run(["hyprctl", "dispatch", expr], capture_output=True, timeout=3)
+            return True
+    return False
+
+
+# ---------------------------------------------------------------- websocket
+
+class WebSocket:
+    """Minimal RFC 6455 client: text frames, ping/pong, close."""
+
+    def __init__(self, host, port):
+        self.sock = socket.create_connection((host, port), timeout=3)
+        self.buf = b""
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall((
+            "GET / HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n"
+            "Sec-WebSocket-Protocol: obswebsocket.json\r\n\r\n" % (host, port, key)).encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = self.sock.recv(4096)
+            if not chunk or len(head) > 65536:
+                raise ConnectionError("handshake failed")
+            head += chunk
+        head, _, rest = head.partition(b"\r\n\r\n")
+        if b" 101 " not in head.split(b"\r\n")[0]:
+            raise ConnectionError("upgrade refused")
+        self.buf = rest
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    def _frame(self, opcode, payload):
+        header = bytes([0x80 | opcode])
+        n = len(payload)
+        if n < 126:
+            header += bytes([0x80 | n])
+        elif n < 65536:
+            header += bytes([0x80 | 126]) + struct.pack(">H", n)
+        else:
+            header += bytes([0x80 | 127]) + struct.pack(">Q", n)
+        mask = os.urandom(4)
+        return header + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+    def send(self, text):
+        self.sock.sendall(self._frame(1, text.encode()))
+
+    def _need(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise ConnectionError("closed")
+            self.buf += chunk
+        data, self.buf = self.buf[:n], self.buf[n:]
+        return data
+
+    def recv(self, timeout):
+        """Next text message, or None if nothing arrives within `timeout`."""
+        deadline = time.monotonic() + timeout
+        message = b""
+        while True:
+            if not self.buf:
+                left = deadline - time.monotonic()
+                if left <= 0 or not select.select([self.sock], [], [], left)[0]:
+                    return None
+            self.sock.settimeout(3)
+            b0, b1 = self._need(2)
+            opcode, length = b0 & 0x0F, b1 & 0x7F
+            if length == 126:
+                length = struct.unpack(">H", self._need(2))[0]
+            elif length == 127:
+                length = struct.unpack(">Q", self._need(8))[0]
+            if length > MAX_MESSAGE:
+                raise ConnectionError("frame too large")
+            masked = b1 & 0x80
+            mask = self._need(4) if masked else b""
+            payload = self._need(length)
+            if masked:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            if opcode == 8:
+                raise ConnectionError("closed by server")
+            if opcode == 9:
+                self.sock.sendall(self._frame(10, payload))
+                continue
+            if opcode == 10:
+                continue
+            message += payload
+            if len(message) > MAX_MESSAGE:
+                raise ConnectionError("message too large")
+            if b0 & 0x80:
+                return message.decode("utf-8", "replace")
+
+
+def obs_auth(password, salt, challenge):
+    secret = base64.b64encode(hashlib.sha256((password + salt).encode()).digest()).decode()
+    return base64.b64encode(hashlib.sha256((secret + challenge).encode()).digest()).decode()
+
+
+class ObsClient:
+    def __init__(self):
+        with open(OBS_WS_CONFIG) as f:
+            cfg = json.load(f)
+        if not cfg.get("server_enabled"):
+            raise ConnectionError("obs-websocket server is disabled in OBS")
+        self.ws = WebSocket("127.0.0.1", int(cfg.get("server_port", 4455)))
+        self.exiting = False
+        try:
+            hello = self._expect(0, 5)
+            ident = {"rpcVersion": 1, "eventSubscriptions": 1}   # General: includes ExitStarted
+            auth = hello.get("authentication")
+            if auth:
+                ident["authentication"] = obs_auth(cfg.get("server_password", ""), auth["salt"], auth["challenge"])
+            self.ws.send(json.dumps({"op": 1, "d": ident}))
+            self._expect(2, 5)
+        except Exception:
+            self.ws.close()
+            raise
+
+    def _expect(self, op, timeout):
+        end = time.monotonic() + timeout
+        while True:
+            msg = self.ws.recv(max(0.1, end - time.monotonic()))
+            if msg is None:
+                raise ConnectionError("timeout")
+            data = json.loads(msg)
+            if data.get("op") == op:
+                return data.get("d", {})
+            self._note(data)
+
+    def _note(self, data):
+        if data.get("op") == 5 and data.get("d", {}).get("eventType") == "ExitStarted":
+            self.exiting = True
+
+    def stream_status(self):
+        """(active, seconds). Raises ConnectionError when the link is gone."""
+        self.ws.send(json.dumps({"op": 6, "d": {"requestType": "GetStreamStatus", "requestId": "status"}}))
+        end = time.monotonic() + 3
+        while True:
+            msg = self.ws.recv(max(0.1, end - time.monotonic()))
+            if msg is None:
+                raise ConnectionError("timeout")
+            data = json.loads(msg)
+            if data.get("op") == 7 and data.get("d", {}).get("requestId") == "status":
+                r = data["d"].get("responseData") or {}
+                return bool(r.get("outputActive")), int(int(r.get("outputDuration", 0)) // 1000)
+            self._note(data)
+
+    def drain(self):
+        """Pick up events (ExitStarted) that arrived since the last call."""
+        while True:
+            msg = self.ws.recv(0)
+            if msg is None:
+                return
+            self._note(json.loads(msg))
+
+    def close(self):
+        self.ws.close()
+
+
+# ---------------------------------------------------------------- daemon
+
+def write_state(state):
+    os.makedirs(RUNTIME, mode=0o700, exist_ok=True)
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, STATE_FILE)
+
+
+def daemon():
+    os.makedirs(RUNTIME, mode=0o700, exist_ok=True)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # One daemon at a time: a second one would relaunch OBS twice.
+    lock = open(os.path.join(RUNTIME, "lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit(0)
+    # The shell starts this daemon; if the shell goes away (restart or crash)
+    # nothing else would ever stop it, so leave when the parent changes.
+    parent = os.getppid()
+    state, seconds, last_out = "idle", 0, None
+    client = None
+    exit_seen = False
+    restarts = []
+    crashed_at = 0.0          # when the current crash was noticed
+    launched = False          # OBS already relaunched for the current crash
+    launched_at = 0.0
+    move_until = 0.0          # keep looking for OBS's window to move until then
+    monitor, monitor_at = "", 0.0
+    preview_until = 0.0
+    try:
+        os.remove(DISMISS_FILE)
+    except OSError:
+        pass
+
+    while True:
+        tick = time.monotonic()
+        if os.getppid() != parent:
+            return
+        settings = read_settings()
+        running = obs_running()
+
+        if tick - monitor_at > 15 or not monitor:
+            monitor, monitor_at = pick_monitor(str(settings.get("monitor", "") or "")), tick
+
+        enabled = settings.get("monitoring") is not False
+        restarting = False
+        if os.path.exists(PREVIEW_FILE):
+            try:
+                os.remove(PREVIEW_FILE)
+            except OSError:
+                pass
+            preview_until = tick + PREVIEW_SECONDS
+
+        if enabled:
+            if running and client is None:
+                try:
+                    client = ObsClient()
+                    exit_seen = False       # a fresh OBS instance: forget the last one's exit
+                except Exception:
+                    client = None
+            if not running and client is not None:
+                client.close()
+                client = None
+
+            live = False
+            if client is not None:
+                try:
+                    client.drain()
+                    live, secs = client.stream_status()
+                    if live:
+                        seconds = secs
+                except Exception:
+                    live, link_lost = False, True
+                else:
+                    link_lost = False
+                # Remember a clean-exit announcement before the link goes away.
+                if client.exiting:
+                    exit_seen = True
+                if link_lost:
+                    client.close()
+                    client = None
+
+            if live:
+                state = "live"
+            elif state == "live":
+                if client is not None:
+                    state = "idle"          # connected and OBS says the stream stopped
+                elif running:
+                    # The link dropped while the process is still there: give OBS a
+                    # moment to either come back or finish exiting. Stay live until
+                    # it is clear (the next tick reconnects or sees it gone).
+                    time.sleep(1)
+                elif exit_seen:
+                    state = "idle"
+                else:
+                    state, seconds, crashed_at, launched = "crashed", 0, tick, False
+            elif state == "crashed" and os.path.exists(DISMISS_FILE):
+                state = "idle"
+            elif state == "off":
+                state = "idle"              # monitoring was just turned back on
+            if os.path.exists(DISMISS_FILE):
+                try:
+                    os.remove(DISMISS_FILE)
+                except OSError:
+                    pass
+
+            # After a relaunch, put OBS on the monitor chosen in the menu.
+            wanted = str(settings.get("obsMonitor", "") or "")
+            if move_until and (not wanted or tick > move_until):
+                move_until = 0.0
+            elif move_until and move_obs_window(wanted):
+                move_until = 0.0
+
+            restarting = False
+            if state == "crashed":
+                auto = settings.get("autoRestart") is True
+                restarts = [t for t in restarts if tick - t < RESTART_WINDOW]
+                if launched and not running and tick - launched_at > 10:
+                    launched, crashed_at = False, tick      # it never came up: try again
+                waiting = auto and not running and not launched and len(restarts) < MAX_RESTARTS
+                if waiting and tick - crashed_at >= RESTART_DELAY:
+                    restarts.append(tick)
+                    launched, launched_at = True, tick
+                    launch_obs()
+                    move_until = tick + MOVE_WINDOW
+                restarting = waiting or (auto and launched and running)
+
+        else:
+            # Paused from the menu: no connection to OBS, no alerts, no relaunch.
+            if client is not None:
+                client.close()
+                client = None
+            state, seconds, exit_seen = "off", 0, False
+            for f in (DISMISS_FILE,):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+        try:
+            scale = max(100, min(500, int(settings.get("alertScale", 300))))
+        except (TypeError, ValueError):
+            scale = 300
+        out = {"state": state, "seconds": seconds if state == "live" else 0,
+               "restarting": restarting, "monitor": monitor,
+               "preview": tick < preview_until,
+               "soundAlert": settings.get("soundAlert") is not False,
+               "alertScale": scale,
+               "soundFile": custom_sound(settings.get("soundFile"))}
+        if out != last_out:
+            write_state(dict(out, updated=int(time.time())))
+            print(json.dumps(out), flush=True)
+            last_out = out
+        time.sleep(max(0.05, 1.0 - (time.monotonic() - tick)))
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "daemon"
+    if cmd == "daemon":
+        daemon()
+    elif cmd == "status":
+        try:
+            with open(STATE_FILE) as f:
+                print(f.read())
+        except OSError:
+            print(json.dumps({"state": "idle", "seconds": 0}))
+    elif cmd == "preview":
+        os.makedirs(RUNTIME, mode=0o700, exist_ok=True)
+        open(PREVIEW_FILE, "w").close()
+    elif cmd == "dismiss":
+        os.makedirs(RUNTIME, mode=0o700, exist_ok=True)
+        open(DISMISS_FILE, "w").close()
+    else:
+        sys.exit("usage: obs-status-guard daemon|status|dismiss|preview")
+
+
+if __name__ == "__main__":
+    main()
