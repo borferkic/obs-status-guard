@@ -83,13 +83,26 @@ Panel {
         width: parent.width
         spacing: Style.space(10)
 
-        Text {
-          textFormat: Text.PlainText
-          text: strings.t("panel.title")
-          color: Commons.Color.popups.text
-          font.family: Style.font.family
-          font.bold: true
-          font.pixelSize: Style.font.title
+        Row {
+          spacing: Style.space(10)
+          Image {
+            anchors.verticalCenter: parent.verticalCenter
+            source: Qt.resolvedUrl("assets/obs.png")
+            sourceSize: Qt.size(128, 128)
+            width: Math.round(Style.font.title * 1.9)
+            height: width
+            smooth: true
+            mipmap: true
+          }
+          Text {
+            textFormat: Text.PlainText
+            anchors.verticalCenter: parent.verticalCenter
+            text: strings.t("panel.title")
+            color: Commons.Color.popups.text
+            font.family: Style.font.family
+            font.bold: true
+            font.pixelSize: Style.font.title
+          }
         }
 
         Toggle {

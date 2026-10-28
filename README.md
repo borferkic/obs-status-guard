@@ -76,6 +76,10 @@ It never touches your real OBS or configuration.
 
 Texts are in `i18n/` (English and Spanish) and follow the language chosen in Omarchy. Add `i18n/<code>.json` to translate.
 
+## Credits
+
+`assets/obs.png` is the OBS Studio logo, shown next to the menu title only to identify OBS. OBS and its logo belong to the [OBS Project](https://obsproject.com); this plugin is not affiliated with or endorsed by it.
+
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The license covers this plugin's code, not the OBS logo.
