@@ -11,6 +11,13 @@ A normal close, or stopping the stream yourself, never raises the alert: it only
 
 Click the label for a menu with the options below.
 
+<p align="center"><img src="screenshots/bar-live.png" alt="Green ON AIR label with the stream time in the bar" width="720"></p>
+<p align="center"><img src="screenshots/bar-closed.png" alt="Red OBS CLOSED label in the bar" width="720"></p>
+
+| The alert (shown here at 300%) | The menu |
+|---|---|
+| <img src="screenshots/alert.png" alt="On-screen alert: OBS closed unexpectedly, you are not streaming" width="520"> | <img src="screenshots/menu.png" alt="Menu with the monitoring, auto-reopen, sound, monitor and size options" width="300"> |
+
 ## Requirements
 
 - Omarchy with the shell plugin system (Hyprland, Quickshell).
