@@ -5,11 +5,13 @@ Watches OBS through its built-in obs-websocket 5.x server (stdlib only: this
 machine ships no websocket library), keeps a state file for the bar widgets
 and streams the same state as JSON lines on stdout for the service.
 
-States: idle, live, crashed.
-  live     OBS reports an active stream.
-  crashed  the stream was live and OBS vanished without announcing a clean
-           exit (the ExitStarted event). Cleared when a stream is live again
-           or when the user dismisses it.
+States: idle, live, recording, crashed.
+  live       OBS reports an active stream (wins over recording when both run).
+  recording  OBS reports an active recording and no stream. `paused` says
+             whether the recording is paused. Off with `showRecording: false`.
+  crashed    the stream was live and OBS vanished without announcing a clean
+             exit (the ExitStarted event). Cleared when a stream or recording
+             is active again or when the user dismisses it.
 
 Optionally relaunches OBS in normal mode and resumes streaming. The flag is
 `autoRestart` in this widget's entry of shell.json.
@@ -352,19 +354,29 @@ class ObsClient:
         if data.get("op") == 5 and data.get("d", {}).get("eventType") == "ExitStarted":
             self.exiting = True
 
-    def stream_status(self):
-        """(active, seconds). Raises ConnectionError when the link is gone."""
-        self.ws.send(json.dumps({"op": 6, "d": {"requestType": "GetStreamStatus", "requestId": "status"}}))
+    def _request(self, request_type, request_id):
+        """responseData of one request. Raises ConnectionError when the link is gone."""
+        self.ws.send(json.dumps({"op": 6, "d": {"requestType": request_type, "requestId": request_id}}))
         end = time.monotonic() + 3
         while True:
             msg = self.ws.recv(max(0.1, end - time.monotonic()))
             if msg is None:
                 raise ConnectionError("timeout")
             data = json.loads(msg)
-            if data.get("op") == 7 and data.get("d", {}).get("requestId") == "status":
-                r = data["d"].get("responseData") or {}
-                return bool(r.get("outputActive")), int(int(r.get("outputDuration", 0)) // 1000)
+            if data.get("op") == 7 and data.get("d", {}).get("requestId") == request_id:
+                return data["d"].get("responseData") or {}
             self._note(data)
+
+    def stream_status(self):
+        """(active, seconds). Raises ConnectionError when the link is gone."""
+        r = self._request("GetStreamStatus", "status")
+        return bool(r.get("outputActive")), int(int(r.get("outputDuration", 0)) // 1000)
+
+    def record_status(self):
+        """(active, seconds, paused). Raises ConnectionError when the link is gone."""
+        r = self._request("GetRecordStatus", "record")
+        return (bool(r.get("outputActive")), int(int(r.get("outputDuration", 0)) // 1000),
+                bool(r.get("outputPaused")))
 
     def drain(self):
         """Pick up events (ExitStarted) that arrived since the last call."""
@@ -426,7 +438,9 @@ def daemon():
             monitor, monitor_at = pick_monitor(str(settings.get("monitor", "") or "")), tick
 
         enabled = settings.get("monitoring") is not False
+        show_rec = settings.get("showRecording") is not False
         restarting = False
+        live = rec = paused = False
         if os.path.exists(PREVIEW_FILE):
             try:
                 os.remove(PREVIEW_FILE)
@@ -445,15 +459,18 @@ def daemon():
                 client.close()
                 client = None
 
-            live = False
             if client is not None:
                 try:
                     client.drain()
                     live, secs = client.stream_status()
+                    if show_rec:
+                        rec, rec_secs, paused = client.record_status()
                     if live:
                         seconds = secs
+                    elif rec:
+                        seconds = rec_secs
                 except Exception:
-                    live, link_lost = False, True
+                    live, rec, paused, link_lost = False, False, False, True
                 else:
                     link_lost = False
                 # Remember a clean-exit announcement before the link goes away.
@@ -467,7 +484,8 @@ def daemon():
                 state = "live"
             elif state == "live":
                 if client is not None:
-                    state = "idle"          # connected and OBS says the stream stopped
+                    # connected and OBS says the stream stopped (a recording may go on)
+                    state = "recording" if rec else "idle"
                 elif running:
                     # The link dropped while the process is still there: give OBS a
                     # moment to either come back or finish exiting. Stay live until
@@ -477,6 +495,10 @@ def daemon():
                     state = "idle"
                 else:
                     state, seconds, crashed_at, launched = "crashed", 0, tick, False
+            elif rec:
+                state = "recording"
+            elif state == "recording":
+                state = "idle"              # recording stopped, or OBS went away mid-recording
             elif state == "crashed" and os.path.exists(DISMISS_FILE):
                 state = "idle"
             elif state == "off":
@@ -524,7 +546,8 @@ def daemon():
             scale = max(100, min(500, int(settings.get("alertScale", 300))))
         except (TypeError, ValueError):
             scale = 300
-        out = {"state": state, "seconds": seconds if state == "live" else 0,
+        out = {"state": state, "seconds": seconds if state in ("live", "recording") else 0,
+               "paused": state == "recording" and paused,
                "restarting": restarting, "monitor": monitor,
                "preview": tick < preview_until,
                "soundAlert": settings.get("soundAlert") is not False,

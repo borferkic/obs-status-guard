@@ -21,6 +21,7 @@ class Mock(threading.Thread):
     def __init__(self, port):
         super().__init__(daemon=True)
         self.port, self.live, self.dur, self.exit_event, self.auth_ok, self.conn = port, True, 5000, False, None, None
+        self.rec, self.rec_dur, self.rec_paused = False, 9000, False
         self.srv = socket.socket(); self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.srv.bind(("127.0.0.1", port)); self.srv.listen(1); self.start()
     def run(self):
@@ -43,8 +44,13 @@ class Mock(threading.Thread):
                     if m["op"] == 6:
                         if self.exit_event:
                             c.sendall(frame(json.dumps({"op": 5, "d": {"eventType": "ExitStarted", "eventIntent": 1}})))
-                        c.sendall(frame(json.dumps({"op": 7, "d": {"requestType": "GetStreamStatus", "requestId": m["d"]["requestId"],
-                            "requestStatus": {"result": True, "code": 100}, "responseData": {"outputActive": self.live, "outputDuration": self.dur}}})))
+                        rtype = m["d"]["requestType"]
+                        if rtype == "GetRecordStatus":
+                            data = {"outputActive": self.rec, "outputPaused": self.rec_paused, "outputDuration": self.rec_dur}
+                        else:
+                            data = {"outputActive": self.live, "outputDuration": self.dur}
+                        c.sendall(frame(json.dumps({"op": 7, "d": {"requestType": rtype, "requestId": m["d"]["requestId"],
+                            "requestStatus": {"result": True, "code": 100}, "responseData": data}})))
             except Exception:
                 pass
     def drop(self):
@@ -103,6 +109,23 @@ def run():
     home, port = setup(False); m.live, m.exit_event = True, False; m.drop(); o = fake_obs(home); d = start_daemon(home)
     wait_state(d, "live"); m.live = False; wait_state(d, "idle"); print("ok stream stopped normally -> idle")
     d.terminate(); d.wait(); o.kill(); o.wait()
+    # 3b. recording: REC with the recording time, paused flag, stream wins, stop -> idle, kill -> no alarm
+    home, port = setup(False); m.live, m.exit_event, m.rec, m.rec_paused = False, False, True, False; m.drop(); o = fake_obs(home); d = start_daemon(home)
+    st = wait_state(d, "recording"); assert st["seconds"] == 9 and st["paused"] is False, st; print("ok recording -> recording, seconds =", st["seconds"])
+    m.rec_paused = True; end = time.time() + 5
+    while not json.load(open(home + "/run/obs-status-guard/state.json")).get("paused"):
+        assert time.time() < end, "paused never reported"; time.sleep(0.2)
+    print("ok paused recording reported"); m.rec_paused = False
+    m.live = True; st = wait_state(d, "live"); assert st["seconds"] == 5, st; print("ok streaming + recording -> live (stream time)")
+    m.live = False; wait_state(d, "recording"); print("ok stream stopped, still recording -> recording")
+    c = json.load(open(home + "/.config/omarchy/shell.json")); c["bar"]["layout"]["right"][0]["showRecording"] = False
+    json.dump(c, open(home + "/.config/omarchy/shell.json", "w")); wait_state(d, "idle"); print("ok showRecording off -> idle while recording")
+    c["bar"]["layout"]["right"][0]["showRecording"] = True
+    json.dump(c, open(home + "/.config/omarchy/shell.json", "w")); wait_state(d, "recording"); print("ok showRecording back on -> recording")
+    m.rec = False; wait_state(d, "idle"); print("ok recording stopped -> idle")
+    m.rec = True; wait_state(d, "recording"); o.kill(); o.wait(); m.drop()
+    wait_state(d, "idle"); print("ok OBS gone mid-recording -> idle (alarm stays stream-only)")
+    d.terminate(); d.wait(); m.rec = False
     # 4. autoRestart on: crash relaunches obs with the right flags
     home, port = setup(True); m.live, m.exit_event = True, False; m.drop(); o = fake_obs(home); d = start_daemon(home)
     wait_state(d, "live"); o.kill(); o.wait(); m.drop()

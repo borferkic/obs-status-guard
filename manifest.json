@@ -5,7 +5,7 @@
   "version": "0.5.0",
   "author": "borferkic",
   "license": "MIT",
-  "description": "Shows an ON AIR pill with the stream time while OBS is live, warns on screen if OBS closes abruptly while streaming, and can reopen OBS and resume the stream.",
+  "description": "Shows an ON AIR pill with the stream time while OBS is live and a REC pill while it records, warns on screen if OBS closes abruptly while streaming, and can reopen OBS and resume the stream.",
   "kinds": [
     "service",
     "bar-widget"
@@ -16,13 +16,15 @@
   },
   "barWidget": {
     "displayName": "OBS Status & Guard",
-    "description": "ON AIR indicator with stream time, and a warning if OBS closes while streaming",
+    "description": "ON AIR indicator with stream time, REC indicator while recording, and a warning if OBS closes while streaming",
     "category": "System",
     "aliases": [
       "obs",
       "onair",
       "stream",
-      "twitch"
+      "twitch",
+      "rec",
+      "recording"
     ],
     "allowMultiple": false,
     "defaultSection": "right",
@@ -33,6 +35,7 @@
       "monitor": "",
       "soundFile": "",
       "monitoring": true,
+      "showRecording": true,
       "obsMonitor": ""
     },
     "schema": [
@@ -40,6 +43,12 @@
         "key": "monitoring",
         "type": "boolean",
         "label": "Monitor OBS (turn off to pause the status pill, alerts and auto-reopen)",
+        "defaultValue": true
+      },
+      {
+        "key": "showRecording",
+        "type": "boolean",
+        "label": "Show a REC pill with the recording time while OBS records",
         "defaultValue": true
       },
       {

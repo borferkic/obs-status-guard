@@ -7,6 +7,7 @@
   "alert.body": "No estás transmitiendo.",
   "alert.restarting": "Reabriendo OBS y reanudando la transmisión…",
   "widget.idle": "OBS",
+  "widget.rec": "REC",
   "panel.title": "OBS Status & Guard",
   "panel.autoRestart.label": "Reabrir OBS automáticamente",
   "panel.autoRestart.desc": "Tras un cierre abrupto, reabre OBS y reanuda la transmisión (vuelve a salir en vivo).",
@@ -26,5 +27,7 @@
   "panel.monitoring.desc": "Vigila OBS para la píldora ON AIR, las alertas de cierre y la reapertura. Apágalo para pausar todo.",
   "panel.obsMonitor": "Reabrir OBS en: %1",
   "panel.obsMonitor.auto": "pantalla por defecto",
-  "panel.obsMonitor.tip": "Clic para recorrer tus monitores"
+  "panel.obsMonitor.tip": "Clic para recorrer tus monitores",
+  "panel.showRecording.label": "Mostrar grabaciones",
+  "panel.showRecording.desc": "Muestra una píldora REC con el tiempo de grabación mientras OBS graba."
 }

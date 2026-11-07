@@ -7,6 +7,7 @@
   "alert.body": "You are not streaming.",
   "alert.restarting": "Reopening OBS and resuming the stream…",
   "widget.idle": "OBS",
+  "widget.rec": "REC",
   "panel.title": "OBS Status & Guard",
   "panel.autoRestart.label": "Reopen OBS automatically",
   "panel.autoRestart.desc": "After an abrupt close, reopen OBS and resume streaming (goes live again).",
@@ -26,5 +27,7 @@
   "panel.monitoring.desc": "Watch OBS for the ON AIR pill, closing alerts and auto-reopen. Turn off to pause everything.",
   "panel.obsMonitor": "Reopen OBS on: %1",
   "panel.obsMonitor.auto": "default screen",
-  "panel.obsMonitor.tip": "Click to cycle through your monitors"
+  "panel.obsMonitor.tip": "Click to cycle through your monitors",
+  "panel.showRecording.label": "Show recordings",
+  "panel.showRecording.desc": "Show a REC pill with the recording time while OBS records."
 }

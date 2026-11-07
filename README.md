@@ -3,15 +3,17 @@
 An [Omarchy](https://omarchy.org) bar widget that watches OBS Studio.
 
 - **While you stream:** a green `● ON AIR 1:27:02` label in the bar with the stream time.
+- **While you record:** a green `● REC 0:24:22` label with the recording time (`❚❚ REC`, dimmed, while the recording is paused). When you stream and record at the same time, the ON AIR label wins.
 - **If OBS closes abruptly while you are live:** a red `● OBS CLOSED` label, a large on-screen alert above the volume OSD on your main monitor, and (optionally) a sound.
 - **Optionally** it reopens OBS in normal mode and resumes the stream by itself.
 - **When idle** it shows a dim `● OBS` so you can see the plugin is running, and `○ OBS off` while monitoring is paused.
 
-A normal close, or stopping the stream yourself, never raises the alert: it only fires when OBS disappears while live without announcing that it is exiting.
+A normal close, or stopping the stream yourself, never raises the alert: it only fires when OBS disappears while live without announcing that it is exiting. Recordings show in the bar but do not raise the alert.
 
 Click the label for a menu with the options below.
 
 <p align="center"><img src="screenshots/bar-live.png" alt="Green ON AIR label with the stream time in the bar" width="720"></p>
+<p align="center"><img src="screenshots/bar-rec.png" alt="Green REC label with the recording time in the bar" width="720"></p>
 <p align="center"><img src="screenshots/bar-closed.png" alt="Red OBS CLOSED label in the bar" width="720"></p>
 
 | The alert (shown here at 300%) | The menu |
@@ -47,6 +49,7 @@ This removes the plugin and its bar entry. The options you chose live in that ba
 | Option | Default | What it does |
 |---|---|---|
 | Monitoring | on | Turn off to pause everything: no connection to OBS, no label, no alerts, no relaunch. |
+| Show recordings | on | Shows the REC label while OBS records. Turn off to show only streams. |
 | Reopen OBS automatically | off | After an abrupt close, wait 5 seconds, reopen OBS and start streaming again. **This puts you live without asking.** At most 3 relaunches per 10 minutes. |
 | Sound alert | on | Plays a sound once when OBS closes abruptly. |
 | Sound file | built-in alarm | Pick your own file (wav, mp3, ogg, opus, flac, m4a, aac). Custom sounds are cut at 10 seconds. |
@@ -54,13 +57,13 @@ This removes the plugin and its bar entry. The options you chose live in that ba
 | Alert size | 300% | 100–500%, in steps of 50. |
 | Preview alert | – | Shows the alert for 6 seconds and plays its sound once, whatever the sound option says. |
 
-They are stored as keys of the widget's entry in `shell.json` (`monitoring`, `autoRestart`, `soundAlert`, `soundFile`, `obsMonitor`, `alertScale`, and `monitor` to pin the alert to a monitor; blank uses the largest one), so you can also edit them there.
+They are stored as keys of the widget's entry in `shell.json` (`monitoring`, `showRecording`, `autoRestart`, `soundAlert`, `soundFile`, `obsMonitor`, `alertScale`, and `monitor` to pin the alert to a monitor; blank uses the largest one), so you can also edit them there.
 
 ## What it does on your machine
 
 Please read this before enabling it, as it is more than a display widget.
 
-- **Reads OBS's WebSocket config**, `~/.config/obs-studio/plugin_config/obs-websocket/config.json`, including the password, and connects to **`127.0.0.1` only**. It asks for the stream status once a second and listens for OBS's exit announcement.
+- **Reads OBS's WebSocket config**, `~/.config/obs-studio/plugin_config/obs-websocket/config.json`, including the password, and connects to **`127.0.0.1` only**. It asks for the stream and recording status once a second and listens for OBS's exit announcement.
 - **Runs a small daemon** (`bin/obs-status-guard`, started and stopped by the shell) and writes its state to `$XDG_RUNTIME_DIR/obs-status-guard/`.
 - **Only when "Reopen OBS automatically" is on**, after an abrupt close it:
   - deletes the `run_*` files in `~/.config/obs-studio/.sentinel/`. OBS 33 leaves one for each instance that did not exit cleanly and asks "normal or safe mode?" at the next start; with no OBS running they are all stale. This means OBS will not offer safe mode after a crash (`obs --safe-mode` still works);
@@ -71,7 +74,7 @@ Please read this before enabling it, as it is more than a display widget.
 
 ## Tests
 
-`tests/test_guard.py` runs the daemon against a mock OBS WebSocket server and a fake `hyprctl` in a temporary home, covering authentication, live and abrupt-close detection, clean exit without a false alarm, the pause switch, the 5-second relaunch delay, launching through the desktop entry, sentinel cleanup and moving only OBS's main window:
+`tests/test_guard.py` runs the daemon against a mock OBS WebSocket server and a fake `hyprctl` in a temporary home, covering authentication, live and abrupt-close detection, recording (REC, paused, stream taking priority, no alert when OBS closes mid-recording, the show-recordings switch), clean exit without a false alarm, the pause switch, the 5-second relaunch delay, launching through the desktop entry, sentinel cleanup and moving only OBS's main window:
 
 ```bash
 python3 tests/test_guard.py

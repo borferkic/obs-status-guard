@@ -5,8 +5,9 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui as Ui
 
-// ON AIR pill with the stream time while OBS is live (green), and an
-// OBS CLOSED pill (red) after an abrupt close. Hidden otherwise. It only
+// ON AIR pill with the stream time while OBS is live (green), a REC pill with
+// the recording time while it records (green, dimmed when paused), and an
+// OBS CLOSED pill (red) after an abrupt close. A dim marker otherwise. It only
 // reads the state file the daemon writes; the Service owns the daemon.
 Ui.BarWidget {
   id: root
@@ -14,6 +15,8 @@ Ui.BarWidget {
 
   property string guardState: "idle"
   property int seconds: 0
+  property bool paused: false
+  readonly property bool active: guardState === "live" || guardState === "recording"
 
   readonly property string helper: Qt.resolvedUrl("bin/obs-status-guard").toString().replace("file://", "")
   readonly property string stateFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/obs-status-guard/state.json"
@@ -38,6 +41,7 @@ Ui.BarWidget {
         var s = JSON.parse(text())
         root.guardState = String(s.state || "idle")
         root.seconds = Number(s.seconds || 0)
+        root.paused = s.paused === true
       } catch (e) { root.guardState = "idle" }
     }
     onLoadFailed: root.guardState = "idle"
@@ -85,7 +89,8 @@ Ui.BarWidget {
     width: label.implicitWidth + Style.space(24)
     // The same corners as the rest of the UI (Hyprland's rounding), not a capsule.
     radius: Style.cornerRadius
-    color: root.guardState === "live" ? root.liveColor : (root.guardState === "crashed" ? root.closedColor : "transparent")
+    color: root.active ? root.liveColor : (root.guardState === "crashed" ? root.closedColor : "transparent")
+    opacity: root.guardState === "recording" && root.paused ? 0.6 : 1
 
     Text {
       id: label
@@ -98,6 +103,8 @@ Ui.BarWidget {
       font.pixelSize: Style.font.bodySmall
       text: root.guardState === "live"
         ? "●  " + strings.t("widget.onair") + "  " + root.clock(root.seconds)
+        : root.guardState === "recording"
+        ? (root.paused ? "❚❚  " : "●  ") + strings.t("widget.rec") + "  " + root.clock(root.seconds)
         : (root.guardState === "crashed" ? "●  " + strings.t("widget.closed")
           : (root.guardState === "off" ? "○  " + strings.t("widget.off") : "●  " + strings.t("widget.idle")))
     }

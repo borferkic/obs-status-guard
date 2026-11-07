@@ -21,6 +21,7 @@ Panel {
 
   readonly property string helper: Qt.resolvedUrl("bin/obs-status-guard").toString().replace("file://", "")
   readonly property bool monitoring: setting("monitoring", true) !== false
+  readonly property bool showRecording: setting("showRecording", true) !== false
   readonly property bool autoRestart: setting("autoRestart", false) === true
   readonly property bool soundAlert: setting("soundAlert", true) !== false
   readonly property string obsMonitor: String(setting("obsMonitor", ""))
@@ -111,6 +112,14 @@ Panel {
           description: strings.t("panel.monitoring.desc")
           checked: root.monitoring
           onClicked: root.setOption("monitoring", !root.monitoring, true)
+        }
+
+        Toggle {
+          width: parent.width
+          label: strings.t("panel.showRecording.label")
+          description: strings.t("panel.showRecording.desc")
+          checked: root.showRecording
+          onClicked: root.setOption("showRecording", !root.showRecording, true)
         }
 
         Toggle {
