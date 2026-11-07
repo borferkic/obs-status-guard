@@ -18,6 +18,7 @@ Panel {
   property var hostWidget: null
   readonly property var barIdentity: hostWidget || root
   property string guardState: "idle"
+  property string linkProblem: ""
 
   readonly property string helper: Qt.resolvedUrl("bin/obs-status-guard").toString().replace("file://", "")
   readonly property bool monitoring: setting("monitoring", true) !== false
@@ -103,6 +104,18 @@ Panel {
             font.bold: true
             font.pixelSize: Style.font.title
           }
+        }
+
+        // Why the pill shows "⚠ OBS", and what to change in OBS.
+        Text {
+          visible: root.guardState === "nolink"
+          width: parent.width
+          wrapMode: Text.WordWrap
+          textFormat: Text.PlainText
+          text: strings.t("panel.link." + (["disabled", "auth"].indexOf(root.linkProblem) >= 0 ? root.linkProblem : "unreachable"))
+          color: Commons.Color.urgent
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
         }
 
         Toggle {

@@ -6,7 +6,8 @@ import qs.Commons as Commons
 import qs.Ui as Ui
 
 // ON AIR pill with the stream time while OBS is live (green), and an
-// OBS CLOSED pill (red) after an abrupt close. Hidden otherwise. It only
+// OBS CLOSED pill (red) after an abrupt close, and a red "⚠ OBS" marker while
+// OBS runs but its WebSocket server can't be used. A dim marker otherwise. It only
 // reads the state file the daemon writes; the Service owns the daemon.
 Ui.BarWidget {
   id: root
@@ -14,6 +15,7 @@ Ui.BarWidget {
 
   property string guardState: "idle"
   property int seconds: 0
+  property string linkProblem: ""
 
   readonly property string helper: Qt.resolvedUrl("bin/obs-status-guard").toString().replace("file://", "")
   readonly property string stateFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/obs-status-guard/state.json"
@@ -38,6 +40,7 @@ Ui.BarWidget {
         var s = JSON.parse(text())
         root.guardState = String(s.state || "idle")
         root.seconds = Number(s.seconds || 0)
+        root.linkProblem = String(s.link || "")
       } catch (e) { root.guardState = "idle" }
     }
     onLoadFailed: root.guardState = "idle"
@@ -52,10 +55,12 @@ Ui.BarWidget {
     if ("anchorItem" in target) target.anchorItem = pill
     if ("hostWidget" in target) target.hostWidget = root
     if ("guardState" in target) target.guardState = root.guardState
+    if ("linkProblem" in target) target.linkProblem = root.linkProblem
   }
   onBarChanged: injectPanel()
   onSettingsChanged: injectPanel()
   onGuardStateChanged: injectPanel()
+  onLinkProblemChanged: injectPanel()
 
   // Shape contract for the bar's popout routing.
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
@@ -91,7 +96,8 @@ Ui.BarWidget {
       id: label
       textFormat: Text.PlainText
       anchors.centerIn: parent
-      color: (root.guardState === "idle" || root.guardState === "off") ? Commons.Color.foreground : "#101418"
+      color: root.guardState === "nolink" ? root.closedColor
+        : ((root.guardState === "idle" || root.guardState === "off") ? Commons.Color.foreground : "#101418")
       opacity: root.guardState === "off" ? 0.3 : (root.guardState === "idle" ? 0.5 : 1)
       font.family: Style.font.family
       font.bold: true
@@ -99,7 +105,8 @@ Ui.BarWidget {
       text: root.guardState === "live"
         ? "●  " + strings.t("widget.onair") + "  " + root.clock(root.seconds)
         : (root.guardState === "crashed" ? "●  " + strings.t("widget.closed")
-          : (root.guardState === "off" ? "○  " + strings.t("widget.off") : "●  " + strings.t("widget.idle")))
+          : (root.guardState === "off" ? "○  " + strings.t("widget.off")
+            : (root.guardState === "nolink" ? "⚠  " + strings.t("widget.nolink") : "●  " + strings.t("widget.idle"))))
     }
 
     MouseArea {

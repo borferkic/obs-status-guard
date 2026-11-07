@@ -6,6 +6,7 @@ An [Omarchy](https://omarchy.org) bar widget that watches OBS Studio.
 - **If OBS closes abruptly while you are live:** a red `● OBS CLOSED` label, a large on-screen alert above the volume OSD on your main monitor, and (optionally) a sound.
 - **Optionally** it reopens OBS in normal mode and resumes the stream by itself.
 - **When idle** it shows a dim `● OBS` so you can see the plugin is running, and `○ OBS off` while monitoring is paused.
+- **If OBS is running but can't be reached** (its WebSocket server is off, rejects the password, or doesn't answer within 10 seconds of OBS starting) it shows a red `⚠ OBS`, and the menu says what to change in OBS.
 
 A normal close, or stopping the stream yourself, never raises the alert: it only fires when OBS disappears while live without announcing that it is exiting.
 
@@ -71,7 +72,7 @@ Please read this before enabling it, as it is more than a display widget.
 
 ## Tests
 
-`tests/test_guard.py` runs the daemon against a mock OBS WebSocket server and a fake `hyprctl` in a temporary home, covering authentication, live and abrupt-close detection, clean exit without a false alarm, the pause switch, the 5-second relaunch delay, launching through the desktop entry, sentinel cleanup and moving only OBS's main window:
+`tests/test_guard.py` runs the daemon against a mock OBS WebSocket server and a fake `hyprctl` in a temporary home, covering authentication, live and abrupt-close detection, the `⚠ OBS` warning (server off, wrong password, nothing answering after the grace period), clean exit without a false alarm, the pause switch, the 5-second relaunch delay, launching through the desktop entry, sentinel cleanup and moving only OBS's main window:
 
 ```bash
 python3 tests/test_guard.py

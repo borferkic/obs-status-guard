@@ -26,5 +26,9 @@
   "panel.monitoring.desc": "Watch OBS for the ON AIR pill, closing alerts and auto-reopen. Turn off to pause everything.",
   "panel.obsMonitor": "Reopen OBS on: %1",
   "panel.obsMonitor.auto": "default screen",
-  "panel.obsMonitor.tip": "Click to cycle through your monitors"
+  "panel.obsMonitor.tip": "Click to cycle through your monitors",
+  "widget.nolink": "OBS",
+  "panel.link.disabled": "Can't reach OBS: its WebSocket server is off. In OBS, open Tools → WebSocket Server Settings and turn on Enable WebSocket server.",
+  "panel.link.auth": "OBS rejected the WebSocket password from its settings file. Click OK in Tools → WebSocket Server Settings so OBS saves it again.",
+  "panel.link.unreachable": "OBS isn't answering on its WebSocket port. Check Tools → WebSocket Server Settings in OBS."
 }

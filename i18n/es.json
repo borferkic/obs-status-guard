@@ -26,5 +26,9 @@
   "panel.monitoring.desc": "Vigila OBS para la píldora ON AIR, las alertas de cierre y la reapertura. Apágalo para pausar todo.",
   "panel.obsMonitor": "Reabrir OBS en: %1",
   "panel.obsMonitor.auto": "pantalla por defecto",
-  "panel.obsMonitor.tip": "Clic para recorrer tus monitores"
+  "panel.obsMonitor.tip": "Clic para recorrer tus monitores",
+  "widget.nolink": "OBS",
+  "panel.link.disabled": "No se puede conectar con OBS: su servidor WebSocket está apagado. En OBS, abre Herramientas → Ajustes del servidor WebSocket y activa el servidor.",
+  "panel.link.auth": "OBS rechazó la contraseña WebSocket de su archivo de ajustes. Pulsa Aceptar en Herramientas → Ajustes del servidor WebSocket para que OBS la guarde de nuevo.",
+  "panel.link.unreachable": "OBS no responde en su puerto WebSocket. Revisa Herramientas → Ajustes del servidor WebSocket en OBS."
 }

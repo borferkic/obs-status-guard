@@ -5,11 +5,14 @@ Watches OBS through its built-in obs-websocket 5.x server (stdlib only: this
 machine ships no websocket library), keeps a state file for the bar widgets
 and streams the same state as JSON lines on stdout for the service.
 
-States: idle, live, crashed.
+States: idle, live, crashed, nolink.
   live     OBS reports an active stream.
   crashed  the stream was live and OBS vanished without announcing a clean
            exit (the ExitStarted event). Cleared when a stream is live again
            or when the user dismisses it.
+  nolink   OBS is running but its WebSocket server can't be used: `link` says
+           why (disabled, auth or unreachable). "unreachable" waits
+           LINK_GRACE seconds first, since OBS starts the server late.
 
 Optionally relaunches OBS in normal mode and resumes streaming. The flag is
 `autoRestart` in this widget's entry of shell.json.
@@ -47,6 +50,8 @@ MAX_RESTARTS = 3          # relaunches allowed per window, so a crash loop can't
 RESTART_WINDOW = 600
 RESTART_DELAY = 5         # seconds to wait after OBS disappears before reopening it; any sooner it opens with an error
 MAX_MESSAGE = 1 << 20     # bound anything read from the socket
+LINK_GRACE = 10           # seconds OBS may run without answering on the WebSocket before the bar says so
+AUTH_FAILED = 4009        # obs-websocket close code for a wrong password
 
 
 # ---------------------------------------------------------------- settings
@@ -223,6 +228,24 @@ def move_obs_window(monitor_name):
 
 # ---------------------------------------------------------------- websocket
 
+class ServerClosed(ConnectionError):
+    """The server sent a close frame; `code` is its close code, if any."""
+
+    def __init__(self, code):
+        super().__init__("closed by server (%s)" % code)
+        self.code = code
+
+
+class LinkError(ConnectionError):
+    """Why no link to OBS could be made: "disabled" (the WebSocket server is
+    off or was never set up), "auth" (OBS rejected the password) or
+    "unreachable" (nothing answered)."""
+
+    def __init__(self, reason, detail=""):
+        super().__init__(detail or reason)
+        self.reason = reason
+
+
 class WebSocket:
     """Minimal RFC 6455 client: text frames, ping/pong, close."""
 
@@ -299,7 +322,7 @@ class WebSocket:
             if masked:
                 payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
             if opcode == 8:
-                raise ConnectionError("closed by server")
+                raise ServerClosed(struct.unpack(">H", payload[:2])[0] if len(payload) >= 2 else None)
             if opcode == 9:
                 self.sock.sendall(self._frame(10, payload))
                 continue
@@ -319,11 +342,17 @@ def obs_auth(password, salt, challenge):
 
 class ObsClient:
     def __init__(self):
-        with open(OBS_WS_CONFIG) as f:
-            cfg = json.load(f)
-        if not cfg.get("server_enabled"):
-            raise ConnectionError("obs-websocket server is disabled in OBS")
-        self.ws = WebSocket("127.0.0.1", int(cfg.get("server_port", 4455)))
+        try:
+            with open(OBS_WS_CONFIG) as f:
+                cfg = json.load(f)
+        except (OSError, ValueError):
+            raise LinkError("disabled", "no obs-websocket config")
+        if not isinstance(cfg, dict) or not cfg.get("server_enabled"):
+            raise LinkError("disabled", "obs-websocket server is disabled in OBS")
+        try:
+            self.ws = WebSocket("127.0.0.1", int(cfg.get("server_port", 4455)))
+        except (OSError, ValueError, TypeError) as e:
+            raise LinkError("unreachable", str(e))
         self.exiting = False
         try:
             hello = self._expect(0, 5)
@@ -333,9 +362,12 @@ class ObsClient:
                 ident["authentication"] = obs_auth(cfg.get("server_password", ""), auth["salt"], auth["challenge"])
             self.ws.send(json.dumps({"op": 1, "d": ident}))
             self._expect(2, 5)
-        except Exception:
+        except ServerClosed as e:
             self.ws.close()
-            raise
+            raise LinkError("auth" if e.code == AUTH_FAILED else "unreachable", str(e))
+        except Exception as e:
+            self.ws.close()
+            raise LinkError("unreachable", str(e))
 
     def _expect(self, op, timeout):
         end = time.monotonic() + timeout
@@ -410,6 +442,7 @@ def daemon():
     move_until = 0.0          # keep looking for OBS's window to move until then
     monitor, monitor_at = "", 0.0
     preview_until = 0.0
+    link_problem, problem_since = "", 0.0   # why OBS can't be reached, and since when
     try:
         os.remove(DISMISS_FILE)
     except OSError:
@@ -439,8 +472,14 @@ def daemon():
                 try:
                     client = ObsClient()
                     exit_seen = False       # a fresh OBS instance: forget the last one's exit
+                except LinkError as e:
+                    client = None
+                    if e.reason != link_problem:
+                        link_problem, problem_since = e.reason, tick
                 except Exception:
                     client = None
+            if client is not None or not running:
+                link_problem = ""
             if not running and client is not None:
                 client.close()
                 client = None
@@ -481,6 +520,11 @@ def daemon():
                 state = "idle"
             elif state == "off":
                 state = "idle"              # monitoring was just turned back on
+            # OBS is up but can't be talked to: say so instead of a calm idle
+            # marker. Live and crashed keep their own handling.
+            if state in ("idle", "nolink"):
+                shown = link_problem and (link_problem != "unreachable" or tick - problem_since >= LINK_GRACE)
+                state = "nolink" if shown else "idle"
             if os.path.exists(DISMISS_FILE):
                 try:
                     os.remove(DISMISS_FILE)
@@ -513,7 +557,7 @@ def daemon():
             if client is not None:
                 client.close()
                 client = None
-            state, seconds, exit_seen = "off", 0, False
+            state, seconds, exit_seen, link_problem = "off", 0, False, ""
             for f in (DISMISS_FILE,):
                 try:
                     os.remove(f)
@@ -526,6 +570,7 @@ def daemon():
             scale = 300
         out = {"state": state, "seconds": seconds if state == "live" else 0,
                "restarting": restarting, "monitor": monitor,
+               "link": link_problem if state == "nolink" else "",
                "preview": tick < preview_until,
                "soundAlert": settings.get("soundAlert") is not False,
                "alertScale": scale,

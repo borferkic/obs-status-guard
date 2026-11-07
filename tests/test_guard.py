@@ -21,6 +21,7 @@ class Mock(threading.Thread):
     def __init__(self, port):
         super().__init__(daemon=True)
         self.port, self.live, self.dur, self.exit_event, self.auth_ok, self.conn = port, True, 5000, False, None, None
+        self.strict_auth = False                   # like real OBS: close with 4009 on a wrong password
         self.srv = socket.socket(); self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.srv.bind(("127.0.0.1", port)); self.srv.listen(1); self.start()
     def run(self):
@@ -37,6 +38,9 @@ class Mock(threading.Thread):
                 c.sendall(frame(json.dumps({"op": 0, "d": {"obsWebSocketVersion": "5.7.4", "rpcVersion": 1, "authentication": {"challenge": CHAL, "salt": SALT}}})))
                 ident = read_frame(c)
                 self.auth_ok = ident["d"].get("authentication") == guard.obs_auth(PASSWORD, SALT, CHAL)
+                if self.strict_auth and not self.auth_ok:
+                    p = struct.pack(">H", 4009) + b"Authentication failed."
+                    c.sendall(bytes([0x88, len(p)]) + p); c.close(); continue
                 c.sendall(frame(json.dumps({"op": 2, "d": {"negotiatedRpcVersion": 1}})))
                 while True:
                     m = read_frame(c)
@@ -155,6 +159,27 @@ def run():
     assert json.load(open(home + "/run/obs-status-guard/state.json"))["state"] == "off"; print("ok no crash alarm while paused")
     o = fake_obs(home); set_monitoring(True); wait_state(d, "live"); print("ok monitoring back on -> live")
     d.terminate(); d.wait(); o.kill(); o.wait()
+    # 6. OBS running but the WebSocket can't be used -> nolink with the reason; fixed -> live
+    def set_ws(home, **kw):
+        path = home + "/.config/obs-studio/plugin_config/obs-websocket/config.json"
+        c = json.load(open(path)); c.update(kw); json.dump(c, open(path, "w"))
+    home, port = setup(False); m.live, m.exit_event = True, False; m.drop(); set_ws(home, server_enabled=False)
+    o = fake_obs(home); d = start_daemon(home)
+    st = wait_state(d, "nolink"); assert st["link"] == "disabled", st; print("ok server disabled -> nolink (disabled)")
+    set_ws(home, server_enabled=True); st = wait_state(d, "live"); assert st["link"] == "", st; print("ok server enabled -> live")
+    d.terminate(); d.wait(); o.kill(); o.wait()
+    home, port = setup(False); m.drop(); m.strict_auth = True; set_ws(home, server_password="wrong")
+    o = fake_obs(home); d = start_daemon(home)
+    st = wait_state(d, "nolink"); assert st["link"] == "auth", st; print("ok wrong password -> nolink (auth)")
+    set_ws(home, server_password=PASSWORD); wait_state(d, "live"); print("ok right password -> live")
+    d.terminate(); d.wait(); o.kill(); o.wait(); m.strict_auth = False
+    home, port = setup(False); set_ws(home, server_port=port + 1)          # nothing listens there
+    o = fake_obs(home); d = start_daemon(home); started = time.time()
+    st = wait_state(d, "nolink", timeout=guard.LINK_GRACE + 6); waited = time.time() - started
+    assert st["link"] == "unreachable" and waited >= guard.LINK_GRACE - 1, (st, waited)
+    print("ok nothing answering -> nolink (unreachable) after %.0f s, not before the grace" % waited)
+    o.kill(); o.wait(); wait_state(d, "idle"); print("ok OBS closed -> idle (no warning without OBS)")
+    d.terminate(); d.wait()
     print("ALL PASSED")
 
 run()
